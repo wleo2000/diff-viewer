@@ -1,30 +1,27 @@
 (function () {
   "use strict";
 
+  const FIXED_SPREADSHEET_ID = "1QkeLcwHvBhhOOm_n7zA7wNliuDbKSOtRCjvYiCbDV2M";
+  const FIXED_SHEET_TAB = "Sheet1";
+
   /** @type {Array<Record<string, string>>} */
   let tasks = [];
 
   /** @type {Record<string, { contributor?: string, review_date?: string }>} */
   let reviewerByTaskId = {};
 
-  const LS_KEY = "promptDiff_sheetApiKey";
-  const LS_URL = "promptDiff_sheetUrl";
-  const LS_TAB = "promptDiff_sheetTab";
-  const LS_REM = "promptDiff_rememberKey";
-
   const els = {
-    sheetUrl: document.getElementById("sheet-url"),
-    sheetTab: document.getElementById("sheet-tab"),
-    sheetApiKey: document.getElementById("sheet-api-key"),
-    rememberKey: document.getElementById("remember-key"),
-    btnLoadSheet: document.getElementById("btn-load-sheet"),
-    btnLoadLocal: document.getElementById("btn-load-local"),
+    sheetStatus: document.getElementById("sheet-status"),
+    btnReload: document.getElementById("btn-reload"),
     taskSelect: document.getElementById("task-select"),
     taskMeta: document.getElementById("task-meta"),
     loadError: document.getElementById("load-error"),
-    diffPrompt: document.getElementById("diff-host-prompt"),
-    diffRubric: document.getElementById("diff-host-rubric"),
+    promptBefore: document.getElementById("prompt-before"),
+    promptAfter: document.getElementById("prompt-after"),
+    rubricBefore: document.getElementById("rubric-before"),
+    rubricAfter: document.getElementById("rubric-after"),
     promptSummary: document.getElementById("prompt-diff-summary"),
+    rubricSummary: document.getElementById("rubric-diff-summary"),
     splitPrompt: document.getElementById("split-prompt"),
     splitRubric: document.getElementById("split-rubric"),
     tabPrompt: document.getElementById("tab-prompt"),
@@ -34,6 +31,13 @@
     panelRubric: document.getElementById("panel-rubric"),
     panelSplit: document.getElementById("panel-split"),
   };
+
+  function getApiKey() {
+    if (typeof window !== "undefined" && window.__SHEETS_API_KEY__) {
+      return String(window.__SHEETS_API_KEY__).trim();
+    }
+    return "";
+  }
 
   function escapeHtml(s) {
     return String(s)
@@ -62,6 +66,43 @@
     } catch {
       return s;
     }
+  }
+
+  /** Parse rubric JSON (raw or pretty) into { sections } root */
+  function parseRubricRoot(str) {
+    const t = String(str || "").trim();
+    if (!t) return null;
+    try {
+      const o = JSON.parse(t);
+      if (o && typeof o === "object" && Array.isArray(o.sections)) return o;
+      if (o && o._value && typeof o._value === "object" && Array.isArray(o._value.sections)) {
+        return o._value;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  /** Human-readable rubric for diffing (no UUIDs) */
+  function rubricToPlaintext(str) {
+    const root = parseRubricRoot(str);
+    if (!root || !Array.isArray(root.sections)) {
+      return String(str || "").trim();
+    }
+    const lines = [];
+    root.sections.forEach(function (sec) {
+      lines.push("## " + String(sec.name || "Section").trim());
+      lines.push("");
+      const crit = sec.criteria || [];
+      crit.forEach(function (c) {
+        const pts = c.points != null && c.points !== "" ? String(c.points) : "?";
+        const q = String(c.question || "").trim();
+        lines.push("[" + pts + " pts] " + q);
+        lines.push("");
+      });
+    });
+    return lines.join("\n").trim();
   }
 
   /** @param {string[][]} values */
@@ -133,14 +174,6 @@
     return quoteSheetTab(tabName) + "!A1:ZZ5000";
   }
 
-  function extractSpreadsheetId(text) {
-    const s = String(text).trim();
-    const m = s.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    if (m) return m[1];
-    if (/^[a-zA-Z0-9-_]{12,120}$/.test(s)) return s;
-    return null;
-  }
-
   /** @param {string} spreadsheetId @param {string} tabName @param {string} apiKey */
   async function fetchGoogleSheetValues(spreadsheetId, tabName, apiKey) {
     const range = a1RangeForTab(tabName);
@@ -165,71 +198,45 @@
     return values;
   }
 
-  function restoreFormFromStorage() {
-    try {
-      if (localStorage.getItem(LS_REM) === "1") {
-        els.rememberKey.checked = true;
-        const k = localStorage.getItem(LS_KEY);
-        const u = localStorage.getItem(LS_URL);
-        const t = localStorage.getItem(LS_TAB);
-        if (k) els.sheetApiKey.value = k;
-        if (u) els.sheetUrl.value = u;
-        if (t) els.sheetTab.value = t;
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
-  function persistFormIfNeeded() {
-    try {
-      if (els.rememberKey.checked) {
-        localStorage.setItem(LS_REM, "1");
-        localStorage.setItem(LS_KEY, els.sheetApiKey.value.trim());
-        localStorage.setItem(LS_URL, els.sheetUrl.value.trim());
-        localStorage.setItem(LS_TAB, els.sheetTab.value.trim() || "Sheet1");
-      } else {
-        localStorage.removeItem(LS_REM);
-        localStorage.removeItem(LS_KEY);
-        localStorage.removeItem(LS_URL);
-        localStorage.removeItem(LS_TAB);
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
-  /** @param {HTMLElement} host @param {string} oldStr @param {string} newStr */
-  function renderPromptWordDiff(host, oldStr, newStr) {
-    host.textContent = "";
+  /**
+   * Before column: unchanged + removed (red). After column: unchanged + added (green).
+   * @param {HTMLElement} leftHost
+   * @param {HTMLElement} rightHost
+   * @param {string} oldStr
+   * @param {string} newStr
+   */
+  function fillDualWordDiff(leftHost, rightHost, oldStr, newStr) {
+    leftHost.textContent = "";
+    rightHost.textContent = "";
     if (typeof Diff === "undefined" || typeof Diff.diffWordsWithSpace !== "function") {
-      host.textContent = "Diff library failed to load.";
+      leftHost.textContent = "Diff library failed to load.";
       return;
     }
     const parts = Diff.diffWordsWithSpace(oldStr || "", newStr || "");
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i];
       if (!p.value) continue;
-      if (p.added) {
-        const s = document.createElement("span");
-        s.className = "diff-word diff-add";
-        s.textContent = p.value;
-        s.title = "Added";
-        host.appendChild(s);
-      } else if (p.removed) {
+      if (p.removed) {
         const s = document.createElement("span");
         s.className = "diff-word diff-del";
         s.textContent = p.value;
         s.title = "Removed";
-        host.appendChild(s);
+        leftHost.appendChild(s);
+      } else if (p.added) {
+        const s = document.createElement("span");
+        s.className = "diff-word diff-add";
+        s.textContent = p.value;
+        s.title = "Added";
+        rightHost.appendChild(s);
       } else {
-        host.appendChild(document.createTextNode(p.value));
+        leftHost.appendChild(document.createTextNode(p.value));
+        rightHost.appendChild(document.createTextNode(p.value));
       }
     }
   }
 
   /** @param {HTMLElement} el @param {string} oldStr @param {string} newStr */
-  function fillPromptSummary(el, oldStr, newStr) {
+  function fillDiffSummary(el, oldStr, newStr, titlePrefix) {
     el.textContent = "";
     if (typeof Diff === "undefined" || typeof Diff.diffWordsWithSpace !== "function") {
       el.hidden = true;
@@ -238,10 +245,17 @@
     const parts = Diff.diffWordsWithSpace(oldStr || "", newStr || "");
     let removedChars = 0;
     let addedChars = 0;
+    let removedHunks = 0;
+    let addedHunks = 0;
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i];
-      if (p.added) addedChars += p.value.length;
-      else if (p.removed) removedChars += p.value.length;
+      if (p.added) {
+        addedChars += p.value.length;
+        addedHunks++;
+      } else if (p.removed) {
+        removedChars += p.value.length;
+        removedHunks++;
+      }
     }
     const vol = removedChars + addedChars;
     const startLen = (oldStr || "").length;
@@ -249,18 +263,18 @@
     const pctStr =
       startLen === 0
         ? addedChars > 0
-          ? "N/A (starting prompt empty)"
+          ? "N/A (empty “before” text)"
           : "0%"
         : ((100 * vol) / startLen).toFixed(2) + "%";
 
     const line1 = document.createElement("div");
-    line1.appendChild(document.createTextNode("Diff size vs starting prompt: "));
+    line1.appendChild(document.createTextNode(titlePrefix + " change volume vs “before”: "));
     const s1 = document.createElement("strong");
     s1.textContent = pctStr;
     line1.appendChild(s1);
     line1.appendChild(
       document.createTextNode(
-        " — character-weighted change volume (removed + added) divided by starting prompt length."
+        " of “before” length — (chars removed + chars added) / length of before."
       )
     );
     el.appendChild(line1);
@@ -272,46 +286,21 @@
       document.createTextNode(
         "Removed " +
           removedChars.toLocaleString() +
-          " chars · Added " +
+          " chars in " +
+          removedHunks +
+          " segment(s) · Added " +
           addedChars.toLocaleString() +
-          " chars · Combined change " +
+          " chars in " +
+          addedHunks +
+          " segment(s) · Combined " +
           vol.toLocaleString() +
-          " chars · Starting length " +
+          " chars · Before length " +
           startLen.toLocaleString() +
           " chars."
       )
     );
     el.appendChild(line2);
     el.hidden = false;
-  }
-
-  /**
-   * @param {HTMLElement} host
-   * @param {string} oldStr
-   * @param {string} newStr
-   * @param {string} oldLabel
-   * @param {string} newLabel
-   */
-  function renderPatchToHost(host, oldStr, newStr, oldLabel, newLabel) {
-    host.innerHTML = "";
-    if (typeof Diff === "undefined" || typeof Diff.createTwoFilesPatch !== "function") {
-      host.textContent = "Diff library failed to load.";
-      return;
-    }
-    const patch = Diff.createTwoFilesPatch(oldLabel, newLabel, oldStr, newStr, "", "", {
-      context: 5,
-    });
-    if (typeof Diff2Html !== "undefined" && typeof Diff2Html.html === "function") {
-      host.innerHTML = Diff2Html.html(patch, {
-        drawFileList: false,
-        matching: "lines",
-        outputFormat: "side-by-side",
-        synchronisedScroll: true,
-        highlight: true,
-      });
-      return;
-    }
-    host.textContent = patch;
   }
 
   function setTab(which) {
@@ -331,6 +320,7 @@
 
   function currentTask() {
     const i = Number(els.taskSelect.value);
+    if (Number.isNaN(i)) return null;
     return tasks[i] || null;
   }
 
@@ -357,28 +347,29 @@
   function refreshDiffs() {
     const t = currentTask();
     if (!t) {
-      els.diffPrompt.textContent = "";
-      els.diffRubric.textContent = "";
+      els.promptBefore.textContent = "";
+      els.promptAfter.textContent = "";
+      els.rubricBefore.textContent = "";
+      els.rubricAfter.textContent = "";
       els.splitPrompt.textContent = "";
       els.splitRubric.textContent = "";
       els.promptSummary.hidden = true;
+      els.rubricSummary.hidden = true;
       els.taskMeta.textContent = "";
       return;
     }
     const prev = t.previous_prompt || "";
     const latest = t.latest_prompt || "";
-    renderPromptWordDiff(els.diffPrompt, prev, latest);
-    fillPromptSummary(els.promptSummary, prev, latest);
+    fillDualWordDiff(els.promptBefore, els.promptAfter, prev, latest);
+    fillDiffSummary(els.promptSummary, prev, latest, "Prompt");
 
-    renderPatchToHost(
-      els.diffRubric,
-      t.previous_rubric || "",
-      t.latest_rubric || "",
-      "previous_rubric",
-      "latest_rubric"
-    );
+    const prevR = rubricToPlaintext(t.previous_rubric || "");
+    const latestR = rubricToPlaintext(t.latest_rubric || "");
+    fillDualWordDiff(els.rubricBefore, els.rubricAfter, prevR, latestR);
+    fillDiffSummary(els.rubricSummary, prevR, latestR, "Rubric (plaintext)");
+
     els.splitPrompt.textContent = latest;
-    els.splitRubric.textContent = t.latest_rubric || "";
+    els.splitRubric.textContent = latestR;
 
     els.taskMeta.textContent = "";
     const idLine = document.createElement("span");
@@ -414,7 +405,7 @@
     if (tasks.length === 0) {
       const opt = document.createElement("option");
       opt.value = "";
-      opt.textContent = "— Load sheet or local JSON —";
+      opt.textContent = "— No rows loaded —";
       opt.disabled = true;
       opt.selected = true;
       els.taskSelect.appendChild(opt);
@@ -425,7 +416,7 @@
       opt.value = String(i);
       const short = (t.task_id || "row " + i).slice(0, 8);
       const sameP = (t.previous_prompt || "") === (t.latest_prompt || "");
-      const sameR = (t.previous_rubric || "") === (t.latest_rubric || "");
+      const sameR = rubricToPlaintext(t.previous_rubric || "") === rubricToPlaintext(t.latest_rubric || "");
       const rev = reviewerInfo(t);
       const who = rev ? rev.contributor + " · " : "";
       opt.textContent =
@@ -458,23 +449,26 @@
     }
   }
 
-  async function loadFromGoogleSheet() {
+  async function loadSheetData() {
     clearError();
-    const id = extractSpreadsheetId(els.sheetUrl.value);
-    const apiKey = els.sheetApiKey.value.trim();
-    const tab = els.sheetTab.value.trim() || "Sheet1";
-    if (!id) {
-      showError("Paste a full Google Sheets URL or the spreadsheet ID.");
-      return;
-    }
+    const apiKey = getApiKey();
     if (!apiKey) {
-      showError("Enter a Google API key with the Sheets API enabled.");
+      els.sheetStatus.textContent = "Missing API key.";
+      showError(
+        "No Google API key in js/config.generated.js. Run npm run build with environment variable SHEETS_API_KEY " +
+          "(Vercel: Project → Settings → Environment Variables), or create a one-line .sheets-key file in the project root and run npm run build again."
+      );
+      tasks = [];
+      populateSelect();
+      refreshDiffs();
       return;
     }
-    persistFormIfNeeded();
-    els.btnLoadSheet.disabled = true;
+
+    els.sheetStatus.textContent = "Loading sheet…";
+    els.btnReload.disabled = true;
+    const prevTasks = tasks.slice();
     try {
-      const values = await fetchGoogleSheetValues(id, tab, apiKey);
+      const values = await fetchGoogleSheetValues(FIXED_SPREADSHEET_ID, FIXED_SHEET_TAB, apiKey);
       tasks = rowsToTasks(values);
       if (tasks.length === 0) {
         throw new Error("No data rows after the header.");
@@ -482,42 +476,20 @@
       await loadReviewersOptional();
       populateSelect();
       refreshDiffs();
+      els.sheetStatus.textContent =
+        "Loaded " + tasks.length + " row(s) from Google Sheets · " + FIXED_SPREADSHEET_ID.slice(0, 8) + "…";
     } catch (e) {
-      tasks = [];
-      populateSelect();
-      showError(String(e && e.message ? e.message : e));
-    } finally {
-      els.btnLoadSheet.disabled = false;
-    }
-  }
-
-  async function loadLocalJson() {
-    clearError();
-    els.btnLoadLocal.disabled = true;
-    try {
-      const tasksRes = await fetch("data/tasks.json", { cache: "no-store" });
-      if (!tasksRes.ok) throw new Error(tasksRes.status + " " + tasksRes.statusText);
-      tasks = await tasksRes.json();
-      if (!Array.isArray(tasks) || tasks.length === 0) throw new Error("No tasks in JSON");
-      await loadReviewersOptional();
+      tasks = prevTasks;
       populateSelect();
       refreshDiffs();
-    } catch (e) {
-      reviewerByTaskId = {};
-      tasks = [];
-      populateSelect();
-      showError(
-        "Could not load data/tasks.json. " +
-          String(e && e.message ? e.message : e) +
-          " — use Load sheet or run export_xlsx_to_json.py."
-      );
+      els.sheetStatus.textContent = "Load failed (kept previous data if any).";
+      showError(String(e && e.message ? e.message : e));
     } finally {
-      els.btnLoadLocal.disabled = false;
+      els.btnReload.disabled = false;
     }
   }
 
-  els.btnLoadSheet.addEventListener("click", loadFromGoogleSheet);
-  els.btnLoadLocal.addEventListener("click", loadLocalJson);
+  els.btnReload.addEventListener("click", loadSheetData);
   els.taskSelect.addEventListener("change", refreshDiffs);
 
   els.tabPrompt.addEventListener("click", function () {
@@ -530,19 +502,5 @@
     setTab("split");
   });
 
-  els.rememberKey.addEventListener("change", function () {
-    if (!els.rememberKey.checked) {
-      try {
-        localStorage.removeItem(LS_REM);
-        localStorage.removeItem(LS_KEY);
-        localStorage.removeItem(LS_URL);
-        localStorage.removeItem(LS_TAB);
-      } catch {
-        /* ignore */
-      }
-    }
-  });
-
-  restoreFormFromStorage();
-  populateSelect();
+  loadSheetData();
 })();

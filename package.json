@@ -3,6 +3,6 @@
   "private": true,
   "description": "Static site — prompt diff from Google Sheets or local JSON",
   "scripts": {
-    "build": "node -e \"process.exit(0)\""
+    "build": "node scripts/gen-config.js"
   }
 }
