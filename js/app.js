@@ -35,6 +35,9 @@
     btnTaskNext: document.getElementById("btn-task-next"),
     datasetAnalysis: document.getElementById("dataset-analysis"),
     datasetAnalysisBody: document.getElementById("dataset-analysis-body"),
+    contributorAnalysis: document.getElementById("contributor-analysis"),
+    contributorAnalysisBody: document.getElementById("contributor-analysis-body"),
+    contributorAnalysisLead: document.getElementById("contributor-analysis-lead"),
   };
 
   function getApiKey() {
@@ -472,19 +475,35 @@
     return x.toFixed(1) + "%";
   }
 
-  function updateDatasetAnalysis() {
-    const section = els.datasetAnalysis;
-    const body = els.datasetAnalysisBody;
-    if (!section || !body) return;
-    const n = tasks.length;
+  /**
+   * @param {Array<Record<string, string>>} list
+   * @returns {{
+   *   n: number,
+   *   promptEdits: number,
+   *   rubricEdits: number,
+   *   pctPromptTasks: number,
+   *   pctRubricTasks: number,
+   *   avgPrompt: number | null,
+   *   avgRubric: number | null,
+   *   cntPromptPct: number,
+   *   cntRubricPct: number
+   * }}
+   */
+  function computeMetricsForTaskList(list) {
+    const n = list.length;
     if (n === 0) {
-      section.hidden = true;
-      body.textContent = "";
-      return;
+      return {
+        n: 0,
+        promptEdits: 0,
+        rubricEdits: 0,
+        pctPromptTasks: 0,
+        pctRubricTasks: 0,
+        avgPrompt: null,
+        avgRubric: null,
+        cntPromptPct: 0,
+        cntRubricPct: 0,
+      };
     }
-    section.hidden = false;
-    body.textContent = "";
-
     let promptEdits = 0;
     let rubricEdits = 0;
     let sumPromptPct = 0;
@@ -493,7 +512,7 @@
     let cntRubricPct = 0;
 
     for (let i = 0; i < n; i++) {
-      const t = tasks[i];
+      const t = list[i];
       const pBefore = t.previous_prompt || "";
       const pAfter = t.latest_prompt || "";
       if (pBefore !== pAfter) promptEdits++;
@@ -514,13 +533,27 @@
       }
     }
 
-    const pctPromptTasks = (100 * promptEdits) / n;
-    const pctRubricTasks = (100 * rubricEdits) / n;
-    const avgPrompt = cntPromptPct ? sumPromptPct / cntPromptPct : null;
-    const avgRubric = cntRubricPct ? sumRubricPct / cntRubricPct : null;
+    return {
+      n,
+      promptEdits,
+      rubricEdits,
+      pctPromptTasks: (100 * promptEdits) / n,
+      pctRubricTasks: (100 * rubricEdits) / n,
+      avgPrompt: cntPromptPct ? sumPromptPct / cntPromptPct : null,
+      avgRubric: cntRubricPct ? sumRubricPct / cntRubricPct : null,
+      cntPromptPct,
+      cntRubricPct,
+    };
+  }
 
-    const grid = document.createElement("div");
-    grid.className = "analysis-metrics";
+  /**
+   * @param {HTMLElement} grid
+   * @param {object} m metrics from computeMetricsForTaskList
+   * @param {{ tasksLabel?: string, tasksCardTitle?: string }} [opts]
+   */
+  function appendMetricCards(grid, m, opts) {
+    const tasksLabel = (opts && opts.tasksLabel) || "Data rows in this sheet load";
+    const tasksCardTitle = (opts && opts.tasksCardTitle) || "Tasks";
 
     /**
      * @param {string} label
@@ -547,33 +580,118 @@
       grid.appendChild(c);
     }
 
-    card("Tasks loaded", String(n), "Data rows in this sheet load");
+    if (m.n === 0) {
+      card(tasksCardTitle, "0", "No tasks in this slice");
+      return;
+    }
+
+    card(tasksCardTitle, String(m.n), tasksLabel);
     card(
       "Prompt edits",
-      promptEdits + " (" + pctPromptTasks.toFixed(1) + "%)",
-      "Share of tasks where previous prompt ≠ latest (raw text)"
+      m.promptEdits + " (" + m.pctPromptTasks.toFixed(1) + "%)",
+      "Share of these tasks where previous prompt ≠ latest (raw text)"
     );
     card(
       "Rubric edits",
-      rubricEdits + " (" + pctRubricTasks.toFixed(1) + "%)",
-      "Share of tasks where plaintext rubric (before) ≠ (after)"
+      m.rubricEdits + " (" + m.pctRubricTasks.toFixed(1) + "%)",
+      "Share of these tasks where plaintext rubric (before) ≠ (after)"
     );
     card(
       "Avg prompt change depth",
-      formatPctOrDash(avgPrompt),
-      cntPromptPct
-        ? "Mean of (removed+added chars) ÷ prior prompt length · " + cntPromptPct + " task(s) with non-empty prior"
+      formatPctOrDash(m.avgPrompt),
+      m.cntPromptPct
+        ? "Mean of (removed+added chars) ÷ prior prompt length · " + m.cntPromptPct + " task(s) with non-empty prior"
         : "No tasks with a non-empty prior prompt"
     );
     card(
       "Avg rubric change depth",
-      formatPctOrDash(avgRubric),
-      cntRubricPct
-        ? "Same metric on plaintext rubrics · " + cntRubricPct + " task(s) with non-empty prior rubric"
+      formatPctOrDash(m.avgRubric),
+      m.cntRubricPct
+        ? "Same metric on plaintext rubrics · " + m.cntRubricPct + " task(s) with non-empty prior rubric"
         : "No tasks with a non-empty prior rubric"
     );
+  }
 
+  /** @returns {Map<string, { displayName: string, tasks: Array<Record<string, string>> }>} */
+  function groupTasksByContributor() {
+    const map = new Map();
+    for (let i = 0; i < tasks.length; i++) {
+      const t = tasks[i];
+      const raw = typeof t.contributor === "string" ? t.contributor.trim() : "";
+      const groupKey = raw || "__empty__";
+      const displayName = raw || "(no name in column G)";
+      if (!map.has(groupKey)) {
+        map.set(groupKey, { displayName: displayName, tasks: [] });
+      }
+      map.get(groupKey).tasks.push(t);
+    }
+    return map;
+  }
+
+  function updateDatasetAnalysis() {
+    const section = els.datasetAnalysis;
+    const body = els.datasetAnalysisBody;
+    const contribSection = els.contributorAnalysis;
+    const contribBody = els.contributorAnalysisBody;
+    if (!section || !body) return;
+    const n = tasks.length;
+    if (n === 0) {
+      section.hidden = true;
+      body.textContent = "";
+      if (contribSection) contribSection.hidden = true;
+      if (contribBody) contribBody.textContent = "";
+      if (els.contributorAnalysisLead) els.contributorAnalysisLead.textContent = "";
+      return;
+    }
+    section.hidden = false;
+    body.textContent = "";
+
+    const overall = computeMetricsForTaskList(tasks);
+    const grid = document.createElement("div");
+    grid.className = "analysis-metrics";
+    appendMetricCards(grid, overall, {
+      tasksLabel: "All loaded rows",
+      tasksCardTitle: "Tasks loaded",
+    });
     body.appendChild(grid);
+
+    if (contribSection && contribBody) {
+      contribSection.hidden = false;
+      contribBody.textContent = "";
+      const grouped = groupTasksByContributor();
+      if (els.contributorAnalysisLead) {
+        const uniq = grouped.size;
+        els.contributorAnalysisLead.textContent =
+          "Same metrics as the dataset overview, scoped to each unique value in column G. " +
+          uniq +
+          " unique contributor" +
+          (uniq === 1 ? "" : "s") +
+          " (including 'no name' if column G is blank).";
+      }
+      const entries = Array.from(grouped.entries());
+      entries.sort(function (a, b) {
+        if (a[0] === "__empty__") return 1;
+        if (b[0] === "__empty__") return -1;
+        return a[1].displayName.localeCompare(b[1].displayName, undefined, { sensitivity: "base" });
+      });
+      for (let e = 0; e < entries.length; e++) {
+        const info = entries[e][1];
+        const block = document.createElement("div");
+        block.className = "contributor-block";
+        const h = document.createElement("h3");
+        h.className = "contributor-block-title";
+        h.textContent = info.displayName;
+        block.appendChild(h);
+        const inner = document.createElement("div");
+        inner.className = "analysis-metrics";
+        const m = computeMetricsForTaskList(info.tasks);
+        appendMetricCards(inner, m, {
+          tasksLabel: "This contributor’s tasks (column G)",
+        });
+        block.appendChild(inner);
+        contribBody.appendChild(block);
+      }
+    }
   }
 
   function syncTaskNavButtons() {

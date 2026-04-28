@@ -99,6 +99,36 @@ header h1 {
   color: var(--muted);
 }
 
+.dataset-analysis-lead {
+  margin: 0 0 0.65rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.contributor-analysis-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.contributor-block {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.contributor-block:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.contributor-block-title {
+  margin: 0 0 0.45rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .analysis-metrics {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
