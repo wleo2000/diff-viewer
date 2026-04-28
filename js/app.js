@@ -2,7 +2,11 @@
   "use strict";
 
   const FIXED_SPREADSHEET_ID = "1QkeLcwHvBhhOOm_n7zA7wNliuDbKSOtRCjvYiCbDV2M";
-  const FIXED_SHEET_TAB = "Sheet1";
+  /** Prefer these tab names in order; if none match, use the first tab in the file. */
+  const PREFERRED_SHEET_TABS = ["Sheet1", "Sheet 1", "Data", "Tasks", "Export", "Query"];
+
+  /** @type {string} */
+  let resolvedSheetTitle = "";
 
   /** @type {Array<Record<string, string>>} */
   let tasks = [];
@@ -105,6 +109,9 @@
     return lines.join("\n").trim();
   }
 
+  /** Column G (1-based) = index 6 — contributor name for each row. */
+  const CONTRIBUTOR_COLUMN_INDEX = 6;
+
   /** @param {string[][]} values */
   function rowsToTasks(values) {
     if (!values || values.length < 2) {
@@ -134,7 +141,6 @@
       latest_prompt: col(["latest_prompt", "latestprompt", "new_prompt", "prompt_after"]),
       previous_rubric: col(["previous_rubric", "previousrubric"]),
       latest_rubric: col(["latest_rubric", "latestrubric", "rubric"]),
-      contributor: col(["contributor", "reviewer", "reviewed_by", "owner", "author"]),
       review_date: col(["review_date", "date", "reviewed", "batch"]),
     };
     if (ix.previous_prompt < 0 && ix.latest_prompt < 0) {
@@ -157,7 +163,7 @@
         latest_prompt: latest,
         previous_rubric: tryPrettyJsonCell(get(ix.previous_rubric)),
         latest_rubric: tryPrettyJsonCell(get(ix.latest_rubric)),
-        contributor: get(ix.contributor),
+        contributor: get(CONTRIBUTOR_COLUMN_INDEX),
         review_date: get(ix.review_date),
       });
     }
@@ -165,13 +171,54 @@
   }
 
   function quoteSheetTab(tabName) {
-    const t = (tabName || "Sheet1").trim() || "Sheet1";
+    const t = String(tabName || "").trim();
+    if (!t) return "Sheet1";
     const needsQuote = /[^a-zA-Z0-9_]/.test(t) || /^\d/.test(t);
     return needsQuote ? "'" + t.replace(/'/g, "''") + "'" : t;
   }
 
+  /** All used data in columns A–ZZ (unbounded rows); avoids some “parse range” edge cases. */
   function a1RangeForTab(tabName) {
-    return quoteSheetTab(tabName) + "!A1:ZZ5000";
+    return quoteSheetTab(tabName) + "!A:ZZ";
+  }
+
+  /** @param {string} spreadsheetId @param {string} apiKey @returns {Promise<string[]>} */
+  async function fetchSpreadsheetTabTitles(spreadsheetId, apiKey) {
+    const url =
+      "https://sheets.googleapis.com/v4/spreadsheets/" +
+      encodeURIComponent(spreadsheetId) +
+      "?fields=sheets.properties.title&key=" +
+      encodeURIComponent(apiKey);
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) {
+      const msg =
+        data && data.error && data.error.message ? data.error.message : res.statusText;
+      throw new Error(msg + " (" + res.status + ")");
+    }
+    const sheets = data.sheets || [];
+    const titles = [];
+    for (let i = 0; i < sheets.length; i++) {
+      const t = sheets[i] && sheets[i].properties && sheets[i].properties.title;
+      if (t) titles.push(String(t));
+    }
+    return titles;
+  }
+
+  /** @param {string[]} titles */
+  function pickSheetTitle(titles) {
+    if (!titles || titles.length === 0) {
+      throw new Error("Spreadsheet has no tabs.");
+    }
+    const lower = titles.map(function (t) {
+      return t.toLowerCase();
+    });
+    for (let p = 0; p < PREFERRED_SHEET_TABS.length; p++) {
+      const want = PREFERRED_SHEET_TABS[p].toLowerCase();
+      const idx = lower.indexOf(want);
+      if (idx !== -1) return titles[idx];
+    }
+    return titles[0];
   }
 
   /** @param {string} spreadsheetId @param {string} tabName @param {string} apiKey */
@@ -454,10 +501,17 @@
     const apiKey = getApiKey();
     if (!apiKey) {
       els.sheetStatus.textContent = "Missing API key.";
-      showError(
-        "No Google API key in js/config.generated.js. Run npm run build with environment variable SHEETS_API_KEY " +
-          "(Vercel: Project → Settings → Environment Variables), or create a one-line .sheets-key file in the project root and run npm run build again."
-      );
+      els.loadError.hidden = false;
+      els.loadError.innerHTML =
+        "<strong>API key is missing in the files this deployment is serving.</strong>" +
+        "<p style=\"margin:0.5rem 0 0;font-weight:normal\">On Vercel the key is written at <strong>build</strong> time into <code>js/config.generated.js</code> from the environment variable <code>SHEETS_API_KEY</code> (or <code>GOOGLE_SHEETS_API_KEY</code>).</p>" +
+        "<ul style=\"margin:0.5rem 0 0;padding-left:1.2rem;font-weight:normal\">" +
+        "<li>Name must match exactly (common mistake: spaces or wrong name).</li>" +
+        "<li>Turn on <strong>Production</strong> (and <strong>Preview</strong> if you use preview URLs) for that variable.</li>" +
+        "<li>After saving env vars, trigger a <strong>new deployment</strong> (Redeploy) — existing deployments keep the old file.</li>" +
+        "<li>In the deployment <strong>Build</strong> log, look for <code>[gen-config] key length=…</code> — length should be &gt; 0.</li>" +
+        "</ul>" +
+        "<p style=\"margin:0.5rem 0 0;font-weight:normal\">Local: run <code>npm run build</code> with <code>SHEETS_API_KEY</code> set, or add a one-line <code>.sheets-key</code> file in the project root, then build again.</p>";
       tasks = [];
       populateSelect();
       refreshDiffs();
@@ -468,7 +522,10 @@
     els.btnReload.disabled = true;
     const prevTasks = tasks.slice();
     try {
-      const values = await fetchGoogleSheetValues(FIXED_SPREADSHEET_ID, FIXED_SHEET_TAB, apiKey);
+      const tabTitles = await fetchSpreadsheetTabTitles(FIXED_SPREADSHEET_ID, apiKey);
+      const tabName = pickSheetTitle(tabTitles);
+      resolvedSheetTitle = tabName;
+      const values = await fetchGoogleSheetValues(FIXED_SPREADSHEET_ID, tabName, apiKey);
       tasks = rowsToTasks(values);
       if (tasks.length === 0) {
         throw new Error("No data rows after the header.");
@@ -477,7 +534,13 @@
       populateSelect();
       refreshDiffs();
       els.sheetStatus.textContent =
-        "Loaded " + tasks.length + " row(s) from Google Sheets · " + FIXED_SPREADSHEET_ID.slice(0, 8) + "…";
+        "Loaded " +
+        tasks.length +
+        " row(s) · tab “" +
+        tabName +
+        "” · " +
+        FIXED_SPREADSHEET_ID.slice(0, 8) +
+        "…";
     } catch (e) {
       tasks = prevTasks;
       populateSelect();
