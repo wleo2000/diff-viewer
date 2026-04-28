@@ -674,23 +674,89 @@
         if (b[0] === "__empty__") return -1;
         return a[1].displayName.localeCompare(b[1].displayName, undefined, { sensitivity: "base" });
       });
+
+      const wrap = document.createElement("div");
+      wrap.className = "contributor-table-wrap";
+      const table = document.createElement("table");
+      table.className = "contributor-metrics-table";
+      table.setAttribute("aria-describedby", "contributor-analysis-lead");
+
+      const thead = document.createElement("thead");
+      const hr = document.createElement("tr");
+      const thLabels = [
+        { text: "Contributor", abbr: "Unique value in column G (this row’s name)" },
+        { text: "Tasks", abbr: "Number of rows for this contributor" },
+        {
+          text: "Prompt edits",
+          abbr: "Count and share of tasks where previous prompt ≠ latest (raw text)",
+        },
+        {
+          text: "Rubric edits",
+          abbr: "Count and share of tasks where plaintext rubric before ≠ after",
+        },
+        {
+          text: "Avg prompt Δ",
+          abbr: "Mean of (removed+added chars) ÷ prior prompt length; only tasks with non-empty prior",
+        },
+        {
+          text: "Avg rubric Δ",
+          abbr: "Same on plaintext rubrics; only tasks with non-empty prior rubric",
+        },
+      ];
+      for (let h = 0; h < thLabels.length; h++) {
+        const th = document.createElement("th");
+        th.scope = "col";
+        th.textContent = thLabels[h].text;
+        th.title = thLabels[h].abbr;
+        if (h > 0) th.className = "num";
+        hr.appendChild(th);
+      }
+      thead.appendChild(hr);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
       for (let e = 0; e < entries.length; e++) {
         const info = entries[e][1];
-        const block = document.createElement("div");
-        block.className = "contributor-block";
-        const h = document.createElement("h3");
-        h.className = "contributor-block-title";
-        h.textContent = info.displayName;
-        block.appendChild(h);
-        const inner = document.createElement("div");
-        inner.className = "analysis-metrics";
         const m = computeMetricsForTaskList(info.tasks);
-        appendMetricCards(inner, m, {
-          tasksLabel: "This contributor’s tasks (column G)",
-        });
-        block.appendChild(inner);
-        contribBody.appendChild(block);
+        const tr = document.createElement("tr");
+        const thName = document.createElement("th");
+        thName.scope = "row";
+        thName.className = "contributor-name-cell";
+        thName.textContent = info.displayName;
+        tr.appendChild(thName);
+
+        const tdTasks = document.createElement("td");
+        tdTasks.className = "num";
+        tdTasks.textContent = m.n === 0 ? "0" : String(m.n);
+        tr.appendChild(tdTasks);
+
+        const tdPrompt = document.createElement("td");
+        tdPrompt.className = "num";
+        tdPrompt.textContent =
+          m.n === 0 ? "—" : m.promptEdits + " (" + m.pctPromptTasks.toFixed(1) + "%)";
+        tr.appendChild(tdPrompt);
+
+        const tdRubric = document.createElement("td");
+        tdRubric.className = "num";
+        tdRubric.textContent =
+          m.n === 0 ? "—" : m.rubricEdits + " (" + m.pctRubricTasks.toFixed(1) + "%)";
+        tr.appendChild(tdRubric);
+
+        const tdAvgP = document.createElement("td");
+        tdAvgP.className = "num";
+        tdAvgP.textContent = m.n === 0 ? "—" : formatPctOrDash(m.avgPrompt);
+        tr.appendChild(tdAvgP);
+
+        const tdAvgR = document.createElement("td");
+        tdAvgR.className = "num";
+        tdAvgR.textContent = m.n === 0 ? "—" : formatPctOrDash(m.avgRubric);
+        tr.appendChild(tdAvgR);
+
+        tbody.appendChild(tr);
       }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      contribBody.appendChild(wrap);
     }
   }
 
