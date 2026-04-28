@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prompt diff (Google Sheets)</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/diff2html@3.4.48/bundles/css/diff2html.min.css"
+      crossorigin="anonymous"
+    />
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Prompt diff</h1>
+      <p class="header-lead">Load rows from Google Sheets · compare previous vs latest prompt</p>
+    </header>
+
+    <section class="source-panel" aria-label="Data source">
+      <div class="source-grid">
+        <label class="field-grow">
+          Spreadsheet URL or ID
+          <input
+            type="text"
+            id="sheet-url"
+            placeholder="https://docs.google.com/spreadsheets/d/…"
+            autocomplete="off"
+          />
+        </label>
+        <label>
+          Tab name
+          <input type="text" id="sheet-tab" value="Sheet1" autocomplete="off" />
+        </label>
+        <label class="field-span-full">
+          Google API key
+          <input type="password" id="sheet-api-key" placeholder="Sheets API key (browser-safe restricted key)" autocomplete="off" />
+        </label>
+        <div class="source-actions">
+          <button type="button" id="btn-load-sheet" class="btn-primary">Load sheet</button>
+          <button type="button" id="btn-load-local" class="btn-secondary" title="Load data/tasks.json from this server">
+            Load local JSON
+          </button>
+        </div>
+        <label class="remember">
+          <input type="checkbox" id="remember-key" />
+          Remember API key in this browser
+        </label>
+      </div>
+      <p class="source-hint">
+        Enable the
+        <a href="https://console.cloud.google.com/apis/library/sheets.googleapis.com" target="_blank" rel="noopener noreferrer">Google Sheets API</a>,
+        create an API key, and restrict it to Sheets (read only). The sheet must be readable by that key (share link or public).
+      </p>
+    </section>
+
+    <div class="toolbar-row">
+      <label>
+        Task
+        <select id="task-select" aria-label="Select task"></select>
+      </label>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tab-prompt" aria-selected="true" aria-controls="panel-prompt">
+        Prompt diff
+      </button>
+      <button type="button" role="tab" id="tab-rubric" aria-selected="false" aria-controls="panel-rubric">
+        Rubric diff
+      </button>
+      <button type="button" role="tab" id="tab-split" aria-selected="false" aria-controls="panel-split">
+        Latest: prompt vs rubric
+      </button>
+    </div>
+    <div class="meta" id="task-meta"></div>
+    <div id="load-error" class="banner" hidden></div>
+
+    <main class="main-stage">
+      <div id="panel-prompt" class="panel panel-grow" role="tabpanel" aria-labelledby="tab-prompt">
+        <div id="diff-host-prompt" class="diff-prompt-host" aria-label="Prompt difference"></div>
+        <div id="prompt-diff-summary" class="prompt-summary" hidden></div>
+      </div>
+      <div id="panel-rubric" class="panel panel-grow" role="tabpanel" aria-labelledby="tab-rubric" hidden>
+        <div id="diff-host-rubric" class="diff-rubric-host"></div>
+      </div>
+      <div id="panel-split" class="panel panel-grow" role="tabpanel" aria-labelledby="tab-split" hidden>
+        <div id="split-host">
+          <div class="split-pane">
+            <h3>Latest prompt</h3>
+            <pre id="split-prompt"></pre>
+          </div>
+          <div class="split-pane">
+            <h3>Latest rubric (formatted)</h3>
+            <pre id="split-rubric"></pre>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/diff2html@3.4.48/bundles/js/diff2html.min.js" crossorigin="anonymous"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>
