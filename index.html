@@ -26,11 +26,24 @@
       <button type="button" id="btn-reload" class="btn-secondary">Reload data</button>
     </section>
 
+    <section id="dataset-analysis" class="dataset-analysis" aria-label="Dataset metrics" hidden>
+      <h2 class="dataset-analysis-title">Dataset analysis</h2>
+      <div id="dataset-analysis-body" class="dataset-analysis-body"></div>
+    </section>
+
     <div class="toolbar-row">
-      <label>
-        Task
-        <select id="task-select" aria-label="Select task"></select>
-      </label>
+      <div class="task-nav">
+        <label>
+          Task
+          <select id="task-select" aria-label="Select task"></select>
+        </label>
+        <button type="button" id="btn-task-prev" class="btn-nav" aria-label="Previous task">
+          ← Previous
+        </button>
+        <button type="button" id="btn-task-next" class="btn-nav" aria-label="Next task">
+          Next →
+        </button>
+      </div>
     </div>
 
     <div class="tabs" role="tablist">

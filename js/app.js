@@ -11,9 +11,6 @@
   /** @type {Array<Record<string, string>>} */
   let tasks = [];
 
-  /** @type {Record<string, { contributor?: string, review_date?: string }>} */
-  let reviewerByTaskId = {};
-
   const els = {
     sheetStatus: document.getElementById("sheet-status"),
     btnReload: document.getElementById("btn-reload"),
@@ -34,6 +31,10 @@
     panelPrompt: document.getElementById("panel-prompt"),
     panelRubric: document.getElementById("panel-rubric"),
     panelSplit: document.getElementById("panel-split"),
+    btnTaskPrev: document.getElementById("btn-task-prev"),
+    btnTaskNext: document.getElementById("btn-task-next"),
+    datasetAnalysis: document.getElementById("dataset-analysis"),
+    datasetAnalysisBody: document.getElementById("dataset-analysis-body"),
   };
 
   function getApiKey() {
@@ -252,6 +253,32 @@
    * @param {string} oldStr
    * @param {string} newStr
    */
+  /**
+   * Word-diff volume vs “before” length (same basis as per-task summaries).
+   * @returns {{ vol: number, startLen: number, pct: number | null }}
+   */
+  function diffVolumePct(beforeText, afterText) {
+    const before = beforeText || "";
+    const after = afterText || "";
+    if (typeof Diff === "undefined" || typeof Diff.diffWordsWithSpace !== "function") {
+      return { vol: 0, startLen: before.length, pct: null };
+    }
+    const parts = Diff.diffWordsWithSpace(before, after);
+    let removedChars = 0;
+    let addedChars = 0;
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      if (p.added) addedChars += p.value.length;
+      else if (p.removed) removedChars += p.value.length;
+    }
+    const vol = removedChars + addedChars;
+    const startLen = before.length;
+    if (startLen === 0) {
+      return { vol, startLen, pct: addedChars > 0 ? null : 0 };
+    }
+    return { vol, startLen, pct: (100 * vol) / startLen };
+  }
+
   function fillDualWordDiff(leftHost, rightHost, oldStr, newStr) {
     leftHost.textContent = "";
     rightHost.textContent = "";
@@ -371,6 +398,7 @@
     return tasks[i] || null;
   }
 
+  /** Contributor / date only from the sheet row (column G + optional header date). No JSON fallback. */
   /** @param {Record<string, string>|null} t */
   function reviewerInfo(t) {
     if (!t) return null;
@@ -378,14 +406,6 @@
       return {
         contributor: t.contributor.trim(),
         review_date: String(t.review_date || "").trim(),
-      };
-    }
-    const id = t.task_id ? String(t.task_id) : "";
-    const r = reviewerByTaskId[id];
-    if (r && typeof r.contributor === "string" && r.contributor.trim()) {
-      return {
-        contributor: r.contributor.trim(),
-        review_date: typeof r.review_date === "string" ? r.review_date.trim() : "",
       };
     }
     return null;
@@ -447,6 +467,132 @@
     }
   }
 
+  function formatPctOrDash(x) {
+    if (x === null || typeof x !== "number" || Number.isNaN(x)) return "—";
+    return x.toFixed(1) + "%";
+  }
+
+  function updateDatasetAnalysis() {
+    const section = els.datasetAnalysis;
+    const body = els.datasetAnalysisBody;
+    if (!section || !body) return;
+    const n = tasks.length;
+    if (n === 0) {
+      section.hidden = true;
+      body.textContent = "";
+      return;
+    }
+    section.hidden = false;
+    body.textContent = "";
+
+    let promptEdits = 0;
+    let rubricEdits = 0;
+    let sumPromptPct = 0;
+    let cntPromptPct = 0;
+    let sumRubricPct = 0;
+    let cntRubricPct = 0;
+
+    for (let i = 0; i < n; i++) {
+      const t = tasks[i];
+      const pBefore = t.previous_prompt || "";
+      const pAfter = t.latest_prompt || "";
+      if (pBefore !== pAfter) promptEdits++;
+
+      const rBefore = rubricToPlaintext(t.previous_rubric || "");
+      const rAfter = rubricToPlaintext(t.latest_rubric || "");
+      if (rBefore !== rAfter) rubricEdits++;
+
+      const dp = diffVolumePct(pBefore, pAfter);
+      if (dp.pct !== null) {
+        sumPromptPct += dp.pct;
+        cntPromptPct++;
+      }
+      const dr = diffVolumePct(rBefore, rAfter);
+      if (dr.pct !== null) {
+        sumRubricPct += dr.pct;
+        cntRubricPct++;
+      }
+    }
+
+    const pctPromptTasks = (100 * promptEdits) / n;
+    const pctRubricTasks = (100 * rubricEdits) / n;
+    const avgPrompt = cntPromptPct ? sumPromptPct / cntPromptPct : null;
+    const avgRubric = cntRubricPct ? sumRubricPct / cntRubricPct : null;
+
+    const grid = document.createElement("div");
+    grid.className = "analysis-metrics";
+
+    /**
+     * @param {string} label
+     * @param {string} value
+     * @param {string} [sub]
+     */
+    function card(label, value, sub) {
+      const c = document.createElement("div");
+      c.className = "analysis-card";
+      const h = document.createElement("div");
+      h.className = "analysis-card-label";
+      h.textContent = label;
+      const v = document.createElement("div");
+      v.className = "analysis-card-value";
+      v.textContent = value;
+      c.appendChild(h);
+      c.appendChild(v);
+      if (sub) {
+        const s = document.createElement("div");
+        s.className = "analysis-card-sub";
+        s.textContent = sub;
+        c.appendChild(s);
+      }
+      grid.appendChild(c);
+    }
+
+    card("Tasks loaded", String(n), "Data rows in this sheet load");
+    card(
+      "Prompt edits",
+      promptEdits + " (" + pctPromptTasks.toFixed(1) + "%)",
+      "Share of tasks where previous prompt ≠ latest (raw text)"
+    );
+    card(
+      "Rubric edits",
+      rubricEdits + " (" + pctRubricTasks.toFixed(1) + "%)",
+      "Share of tasks where plaintext rubric (before) ≠ (after)"
+    );
+    card(
+      "Avg prompt change depth",
+      formatPctOrDash(avgPrompt),
+      cntPromptPct
+        ? "Mean of (removed+added chars) ÷ prior prompt length · " + cntPromptPct + " task(s) with non-empty prior"
+        : "No tasks with a non-empty prior prompt"
+    );
+    card(
+      "Avg rubric change depth",
+      formatPctOrDash(avgRubric),
+      cntRubricPct
+        ? "Same metric on plaintext rubrics · " + cntRubricPct + " task(s) with non-empty prior rubric"
+        : "No tasks with a non-empty prior rubric"
+    );
+
+    body.appendChild(grid);
+  }
+
+  function syncTaskNavButtons() {
+    const empty = tasks.length === 0;
+    els.btnTaskPrev.disabled = empty;
+    els.btnTaskNext.disabled = empty;
+  }
+
+  /** @param {number} delta +1 next, -1 previous; wraps at ends */
+  function goTaskByOffset(delta) {
+    const n = tasks.length;
+    if (n === 0) return;
+    let i = Number(els.taskSelect.value);
+    if (Number.isNaN(i) || i < 0 || i >= n) i = 0;
+    i = (i + delta + n) % n;
+    els.taskSelect.value = String(i);
+    refreshDiffs();
+  }
+
   function populateSelect() {
     els.taskSelect.innerHTML = "";
     if (tasks.length === 0) {
@@ -456,6 +602,8 @@
       opt.disabled = true;
       opt.selected = true;
       els.taskSelect.appendChild(opt);
+      syncTaskNavButtons();
+      updateDatasetAnalysis();
       return;
     }
     tasks.forEach((t, i) => {
@@ -470,6 +618,8 @@
         who + short + "…" + (sameP ? "" : " · prompt Δ") + (sameR ? "" : " · rubric Δ");
       els.taskSelect.appendChild(opt);
     });
+    syncTaskNavButtons();
+    updateDatasetAnalysis();
   }
 
   function showError(msg) {
@@ -480,20 +630,6 @@
   function clearError() {
     els.loadError.hidden = true;
     els.loadError.textContent = "";
-  }
-
-  async function loadReviewersOptional() {
-    try {
-      const revRes = await fetch("data/reviewers.json", { cache: "no-store" });
-      if (!revRes.ok) {
-        reviewerByTaskId = {};
-        return;
-      }
-      const j = await revRes.json();
-      reviewerByTaskId = j && typeof j === "object" && !Array.isArray(j) ? j : {};
-    } catch {
-      reviewerByTaskId = {};
-    }
   }
 
   async function loadSheetData() {
@@ -530,7 +666,6 @@
       if (tasks.length === 0) {
         throw new Error("No data rows after the header.");
       }
-      await loadReviewersOptional();
       populateSelect();
       refreshDiffs();
       els.sheetStatus.textContent =
@@ -554,6 +689,12 @@
 
   els.btnReload.addEventListener("click", loadSheetData);
   els.taskSelect.addEventListener("change", refreshDiffs);
+  els.btnTaskPrev.addEventListener("click", function () {
+    goTaskByOffset(-1);
+  });
+  els.btnTaskNext.addEventListener("click", function () {
+    goTaskByOffset(1);
+  });
 
   els.tabPrompt.addEventListener("click", function () {
     setTab("prompt");
@@ -565,5 +706,7 @@
     setTab("split");
   });
 
+  syncTaskNavButtons();
+  updateDatasetAnalysis();
   loadSheetData();
 })();
